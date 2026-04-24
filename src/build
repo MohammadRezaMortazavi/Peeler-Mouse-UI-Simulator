@@ -1,0 +1,8 @@
+[build]
+# This forces cargo to always build for our ARM Cortex-M chip
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+# This tells cargo how to flash the code to the board when you type `cargo run`.
+# Make sure you have probe-rs installed! Replace the chip name with your exact STM32 model.
+runner = "probe-rs run --chip STM32G431CB"
