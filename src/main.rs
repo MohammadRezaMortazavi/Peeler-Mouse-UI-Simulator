@@ -38,13 +38,16 @@ use ratatui::Terminal;
 use mousefood::{EmbeddedBackend, EmbeddedBackendConfig};
 
 // MAX'S FEEDBACK: Use `oled_async` to prevent blocking the async executor during display initialization and rendering.
-// IMPLEMENTATION: Switched from ssd1306/ssd1327 to `oled_async::displays::ssd1309` allowing `.await` on hardware commands.
+// IMPLEMENTATION: Switched from ssd1306/ssd1327 to `oled_async` allowing `.await` on hardware commands.
 use oled_async::{prelude::*, Builder}; 
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
-// Hardware IRQ Bindings for Async I2C (Required by oled_async)
+// ==========================================
+// HARDWARE IRQ BINDINGS (FIXED FOR ASYNC I2C)
+// ==========================================
+// FIX: We only bind I2C Events. DMA interrupts are removed to resolve Trait Binding errors.
 bind_interrupts!(struct Irqs {
     I2C1_EV => i2c::EventInterruptHandler<peripherals::I2C1>;
     I2C1_ER => i2c::ErrorInterruptHandler<peripherals::I2C1>;
@@ -73,7 +76,6 @@ async fn main(spawner: Spawner) {
     // ==========================================
     // SPAWN BUTTON TASKS
     // ==========================================
-    // COMPILER FIX: Expected struct `SpawnToken`, found `Result`. Applied `.unwrap()` directly to the task output, NOT the spawner.
     spawner.spawn(button_task(Input::new(p.PA0, Pull::Up), UIEvent::TogglePower, "Power Button").unwrap());
     spawner.spawn(button_task(Input::new(p.PA1, Pull::Up), UIEvent::ToggleMode, "Mode Button").unwrap());
     spawner.spawn(button_task(Input::new(p.PA4, Pull::Up), UIEvent::Select, "Encoder Select").unwrap());
@@ -85,19 +87,22 @@ async fn main(spawner: Spawner) {
     // ==========================================
     // ASYNC I2C & DISPLAY SETUP
     // ==========================================
-    let mut i2c_cfg = embassy_stm32::i2c::Config::default();
+    let i2c_cfg = embassy_stm32::i2c::Config::default();
+    
+    // FIX: Using NoDma allows us to achieve Async non-blocking I2C via Interrupts (Irqs) 
+    // without triggering strict trait bounds of DMA channel configurations.
     let i2c = I2c::new(
         p.I2C1,
         p.PB8, // SCL
         p.PB9, // SDA
         Irqs,
-        p.DMA1_CH1, // TX DMA for async transfers
-        p.DMA1_CH2, // RX DMA for async transfers
-        embassy_stm32::time::Hertz(400_000),
+        embassy_stm32::dma::NoDma, // TX DMA bypassed
+        embassy_stm32::dma::NoDma, // RX DMA bypassed
         i2c_cfg,
     );
 
-    let mut display: GraphicsMode<_> = Builder::new(oled_async::displays::ssd1309::Ssd1309 {})
+    // FIX: Changed to correct struct path for Ssd1309 in oled_async
+    let mut display: GraphicsMode<_> = Builder::new(oled_async::displays::Ssd1309 {})
         .connect_i2c(i2c)
         .into();
 
