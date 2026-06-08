@@ -2,9 +2,26 @@
 target = "thumbv7em-none-eabihf"
 
 [target.thumbv7em-none-eabihf]
-runner = "probe-rs run --chip STM32G474RETx"
+runner = "probe-rs run --chip STM32G474RETx --probe 0483:374e"
 
 rustflags = [
   "-C", "link-arg=-Tlink.x",
   "-C", "link-arg=-Tdefmt.x",
 ]
+
+[env]
+# DEFMT_LOG = "trace"
+DEFMT_LOG = "debug"
+# DEFMT_LOG = "info"
+
+[profile.release]
+# symbols are nice and they don't increase the size on Flash
+debug = true
+# or "z"
+# opt-level = "s"
+# lto = "fat"
+
+[profile.debug]
+opt-level = "s"
+lto = "fat"
+
