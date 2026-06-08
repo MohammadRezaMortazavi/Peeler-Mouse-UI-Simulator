@@ -6,8 +6,6 @@
 // ==========================================
 // MEMORY ALLOCATION SETUP
 // ==========================================
-// MAX'S FEEDBACK: "Using Box<dyn Error> in embedded usually means heap allocation which we want to avoid if possible. If required by Ratatui, set up an explicit global allocator."
-// IMPLEMENTATION: We explicitly declare the alloc crate and set up `embedded_alloc` to provide the heap memory required by the Ratatui UI framework.
 extern crate alloc;
 use embedded_alloc::Heap;
 
@@ -15,8 +13,6 @@ use defmt_rtt as _;
 use panic_probe as _; 
 
 use embassy_executor::Spawner;
-// MAX'S FEEDBACK: "In the final hardware version, we need to use embassy-time instead of std::time."
-// IMPLEMENTATION: Replaced standard library time with embassy_time for hardware-accurate, non-blocking delays.
 use embassy_time::{Duration, Instant, Timer};
 
 use embassy_stm32::gpio::{Input, Pull};
@@ -37,20 +33,21 @@ use embedded_graphics::pixelcolor::BinaryColor;
 use ratatui::Terminal;
 use mousefood::{EmbeddedBackend, EmbeddedBackendConfig};
 
-// MAX'S FEEDBACK: Use `oled_async` to prevent blocking the async executor during display initialization and rendering.
-// IMPLEMENTATION: Switched from ssd1306/ssd1327 to `oled_async` allowing `.await` on hardware commands.
+// Async OLED driver
 use oled_async::{prelude::*, Builder}; 
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
 // ==========================================
-// HARDWARE IRQ BINDINGS (FIXED FOR ASYNC I2C)
+// HARDWARE IRQ BINDINGS (STM32G4 Corrected)
 // ==========================================
-// FIX: We only bind I2C Events. DMA interrupts are removed to resolve Trait Binding errors.
+// FIX: In STM32G4 pac, the DMA interrupts are named DMA1_CHANNELx, while the peripherals are DMA1_CHx
 bind_interrupts!(struct Irqs {
-    I2C1_EV => i2c::EventInterruptHandler<peripherals::I2C1>;
-    I2C1_ER => i2c::ErrorInterruptHandler<peripherals::I2C1>;
+    I2C1_EV => embassy_stm32::i2c::EventInterruptHandler<peripherals::I2C1>;
+    I2C1_ER => embassy_stm32::i2c::ErrorInterruptHandler<peripherals::I2C1>;
+    DMA1_CHANNEL1 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH1>;
+    DMA1_CHANNEL2 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH2>;
 });
 
 // ==========================================
@@ -87,23 +84,30 @@ async fn main(spawner: Spawner) {
     // ==========================================
     // ASYNC I2C & DISPLAY SETUP
     // ==========================================
-    let i2c_cfg = embassy_stm32::i2c::Config::default();
+    let i2c_cfg = {
+        let mut cfg = embassy_stm32::i2c::Config::default();
+        cfg.sda_pullup = true;
+        cfg.scl_pullup = true;
+        cfg
+    };
     
-    // FIX: Using NoDma allows us to achieve Async non-blocking I2C via Interrupts (Irqs) 
-    // without triggering strict trait bounds of DMA channel configurations.
+    // FIX: Argument order corrected according to Max's snippet. Irqs must be placed BEFORE dma channels.
     let i2c = I2c::new(
         p.I2C1,
         p.PB8, // SCL
         p.PB9, // SDA
-        Irqs,
-        embassy_stm32::dma::NoDma, // TX DMA bypassed
-        embassy_stm32::dma::NoDma, // RX DMA bypassed
+        p.DMA1_CH1, // TX DMA for async transfers
+        p.DMA1_CH2, // RX DMA for async transfers
+        Irqs,  // <-- IRQs placed here!
         i2c_cfg,
     );
 
-    // FIX: Changed to correct struct path for Ssd1309 in oled_async
-    let mut display: GraphicsMode<_> = Builder::new(oled_async::displays::Ssd1309 {})
-        .connect_i2c(i2c)
+    // FIX: Using Max's I2CInterface wrapper. 0x3C is the standard I2C address, 0x40 is the Data Byte prefix.
+    let i2c_interface = ssd1306::I2CDisplayInterface::new(i2c);
+
+    // FIX: Pass the properly wrapped i2c_interface to connect() to satisfy AsyncWriteOnlyDataCommand trait bounds
+    let mut display: GraphicsMode<_, _> = Builder::new(oled_async::displays::ssd1309::Ssd1309_128_64 {})
+        .connect(i2c_interface)
         .into();
 
     let mut display_ok = false;

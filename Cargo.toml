@@ -17,6 +17,7 @@ anyhow = { version = "1.0.81", default-features = false }
 # ==========================================
 # MAX'S FEEDBACK: Switch to async display driver
 oled_async = "0.2.0"
+display-interface-i2c = "0.5.0"
                 
 # ==========================================
 # Embassy Framework (Using Latest Git Master)
