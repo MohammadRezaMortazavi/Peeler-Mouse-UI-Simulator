@@ -102,8 +102,8 @@ async fn main(spawner: Spawner) {
         i2c_cfg,
     );
 
-    // FIX: Using Max's I2CInterface wrapper. 0x3C is the standard I2C address, 0x40 is the Data Byte prefix.
-    let i2c_interface = ssd1306::I2CDisplayInterface::new(i2c);
+    // FIX: Using the proper external crate for the I2C interface wrapper (Max's method)
+    let i2c_interface = display_interface_i2c::I2CInterface::new(i2c, 0x3C, 0x40);
 
     // FIX: Pass the properly wrapped i2c_interface to connect() to satisfy AsyncWriteOnlyDataCommand trait bounds
     let mut display: GraphicsMode<_, _> = Builder::new(oled_async::displays::ssd1309::Ssd1309_128_64 {})
