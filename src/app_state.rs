@@ -21,8 +21,6 @@ pub const LOGO_DOTS: &str = "\
 .█.█.███.███.███..█..███.███.███.
 .................................";
 
-// MAX'S FEEDBACK: "Having a variant `None` inside Motor enum is an anti-pattern in Rust. Use Option<Motor> instead."
-// IMPLEMENTATION: Removed `None` variant. Added defmt::Format for hardware logging.
 #[derive(PartialEq, Copy, Clone, Format)]
 pub enum Motor {
     Translation,
@@ -30,7 +28,6 @@ pub enum Motor {
     Rotation,
 }
 
-// MAX'S FEEDBACK: "StatusState is a bit ambiguous, maybe rename to HMIState?"
 #[derive(PartialEq, Copy, Clone, Format)]
 pub enum HMIState {
     Startup,
@@ -45,7 +42,6 @@ pub enum SpdUnit {
     MMS,
 }
 
-// MAX'S FEEDBACK: "Using UI events to decouple 'how people input' and 'what the UI should do' is smart!"
 #[derive(PartialEq, Copy, Clone, Format)]
 pub enum UIEvent {
     TogglePower,
@@ -63,7 +59,6 @@ pub enum RunState {
     Exit,
 }
 
-// Added Format so we can log the entire AppState if needed
 #[derive(Clone, Format)]
 pub struct AppState {
     pub status: HMIState,
@@ -73,6 +68,7 @@ pub struct AppState {
     pub cut_spd: f32,
     pub rot_spd: f32,
     pub unit: SpdUnit,
+    pub encoder_accum: i8, // Encoder tick accumulator for stepping
 }
 
 impl AppState {
@@ -85,10 +81,10 @@ impl AppState {
             cut_spd: 0.0,
             rot_spd: 0.0,
             unit: SpdUnit::Percent,
+            encoder_accum: 0, // Initial accumulator value
         }
     }
 
-    // FIX: Accepts Option<UIEvent> to seamlessly handle hardware debounce release (None)
     pub fn handle_event(&mut self, event_opt: Option<UIEvent>) -> RunState {
         // Ignore None events (which happen when a button is physically released)
         let event = match event_opt {
@@ -104,6 +100,7 @@ impl AppState {
 
         match event {
             UIEvent::TogglePower => {
+                self.encoder_accum = 0; // Clear accumulated ticks on state change
                 if self.status == HMIState::Off {
                     self.status = HMIState::OnManual;
                 } else {
@@ -116,6 +113,7 @@ impl AppState {
             }
             _ if self.status != HMIState::Off => match event {
                 UIEvent::ToggleMode => {
+                    self.encoder_accum = 0; // Clear accumulated ticks
                     self.status = match self.status {
                         HMIState::OnManual => HMIState::OnAuto,
                         _ => HMIState::OnManual,
@@ -123,6 +121,7 @@ impl AppState {
                     self.motor = None;
                 }
                 UIEvent::StopReset => {
+                    self.encoder_accum = 0; // Clear accumulated ticks
                     self.trans_spd = 0.0;
                     self.cut_spd = 0.0;
                     self.rot_spd = 0.0;
@@ -136,6 +135,7 @@ impl AppState {
                     }
                 }
                 UIEvent::Select if self.status == HMIState::OnManual => {
+                    self.encoder_accum = 0; // Clear accumulated ticks
                     if self.motor.is_none() {
                         self.motor = Some(self.highlighted_motor);
                     } else {
@@ -143,19 +143,27 @@ impl AppState {
                     }
                 }
                 UIEvent::EncoderCCW if self.status == HMIState::OnManual => {
-                    if self.motor.is_none() {
-                        self.highlighted_motor = cycle_motor(self.highlighted_motor, -1);
-                    } else if let Some(active_motor) = self.motor {
-                        let speed_ref = get_speed_ref(self, active_motor);
-                        *speed_ref = (*speed_ref + 0.5).clamp(-100.0, 100.0);
+                    self.encoder_accum -= 1;
+                    if self.encoder_accum <= -3 { // Trigger action after 3 CCW ticks
+                        self.encoder_accum = 0;
+                        if self.motor.is_none() {
+                            self.highlighted_motor = cycle_motor(self.highlighted_motor, -1);
+                        } else if let Some(active_motor) = self.motor {
+                            let speed_ref = get_speed_ref(self, active_motor);
+                            *speed_ref = (*speed_ref + 0.5).clamp(-100.0, 100.0);
+                        }
                     }
                 }
                 UIEvent::EncoderCW if self.status == HMIState::OnManual => {
-                    if self.motor.is_none() {
-                        self.highlighted_motor = cycle_motor(self.highlighted_motor, 1);
-                    } else if let Some(active_motor) = self.motor {
-                        let speed_ref = get_speed_ref(self, active_motor);
-                        *speed_ref = (*speed_ref - 0.5).clamp(-100.0, 100.0);
+                    self.encoder_accum += 1;
+                    if self.encoder_accum >= 3 { // Trigger action after 3 CW ticks
+                        self.encoder_accum = 0;
+                        if self.motor.is_none() {
+                            self.highlighted_motor = cycle_motor(self.highlighted_motor, 1);
+                        } else if let Some(active_motor) = self.motor {
+                            let speed_ref = get_speed_ref(self, active_motor);
+                            *speed_ref = (*speed_ref - 0.5).clamp(-100.0, 100.0);
+                        }
                     }
                 }
                 _ => {}
