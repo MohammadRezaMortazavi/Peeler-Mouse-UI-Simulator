@@ -7,7 +7,7 @@
 // MEMORY ALLOCATION SETUP
 // ==========================================
 extern crate alloc;
-use embedded_alloc::Heap;
+use embedded_alloc::LlffHeap; // MAX'S FEEDBACK: Use LlffHeap for current embedded_alloc version
 
 use defmt_rtt as _; 
 use panic_probe as _; 
@@ -16,7 +16,8 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
 
 use embassy_stm32::gpio::{Input, Pull};
-use embassy_stm32::i2c::{self, I2c};
+use embassy_stm32::i2c::{self, I2c, Config};
+use embassy_stm32::time::Hertz;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::peripherals;
 
@@ -37,17 +38,15 @@ use mousefood::{EmbeddedBackend, EmbeddedBackendConfig};
 use oled_async::{prelude::*, Builder}; 
 
 #[global_allocator]
-static HEAP: Heap = Heap::empty();
+static HEAP: LlffHeap = LlffHeap::empty();
 
 // ==========================================
 // HARDWARE IRQ BINDINGS (STM32G4 Corrected)
 // ==========================================
-// FIX: In STM32G4 pac, the DMA interrupts are named DMA1_CHANNELx, while the peripherals are DMA1_CHx
+// FIX: DMA interrupts are handled internally by Embassy for I2C. We only bind I2C Events.
 bind_interrupts!(struct Irqs {
     I2C1_EV => embassy_stm32::i2c::EventInterruptHandler<peripherals::I2C1>;
     I2C1_ER => embassy_stm32::i2c::ErrorInterruptHandler<peripherals::I2C1>;
-    DMA1_CHANNEL1 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH1>;
-    DMA1_CHANNEL2 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH2>;
 });
 
 // ==========================================
@@ -58,7 +57,7 @@ async fn main(spawner: Spawner) {
     // 1. Initialize Heap for Ratatui
     {
         use core::mem::MaybeUninit;
-        const HEAP_SIZE: usize = 1024 * 64; 
+        const HEAP_SIZE: usize = 1024 * 32; // 32KB is highly optimal and safe for STM32G4
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
         
         unsafe { 
@@ -85,27 +84,26 @@ async fn main(spawner: Spawner) {
     // ASYNC I2C & DISPLAY SETUP
     // ==========================================
     let i2c_cfg = {
-        let mut cfg = embassy_stm32::i2c::Config::default();
+        let mut cfg = Config::default();
         cfg.sda_pullup = true;
         cfg.scl_pullup = true;
         cfg
     };
     
-    // FIX: Argument order corrected according to Max's snippet. Irqs must be placed BEFORE dma channels.
+    // FIX: Argument order strictly aligned with Embassy Async I2C constraints
     let i2c = I2c::new(
         p.I2C1,
         p.PB8, // SCL
         p.PB9, // SDA
         p.DMA1_CH1, // TX DMA for async transfers
         p.DMA1_CH2, // RX DMA for async transfers
-        Irqs,  // <-- IRQs placed here!
+        Irqs,  // <-- IRQs placed BEFORE DMA channels
+        Hertz(400_000), // Fast mode 400kHz required by display
         i2c_cfg,
     );
 
-    // FIX: Using the proper external crate for the I2C interface wrapper (Max's method)
     let i2c_interface = display_interface_i2c::I2CInterface::new(i2c, 0x3C, 0x40);
 
-    // FIX: Pass the properly wrapped i2c_interface to connect() to satisfy AsyncWriteOnlyDataCommand trait bounds
     let mut display: GraphicsMode<_, _> = Builder::new(oled_async::displays::ssd1309::Ssd1309_128_64 {})
         .connect(i2c_interface)
         .into();
@@ -157,9 +155,7 @@ async fn main(spawner: Spawner) {
         // Hardware Event Polling via Watch Channel
         match embassy_time::with_timeout(Duration::from_millis(30), event_receiver.changed()).await {
             Ok(hardware_event) => {
-                if let Some(ev) = hardware_event {
-                    app.handle_event(ev);
-                }
+                app.handle_event(hardware_event);
             }
             Err(_) => {} // Timeout hit, continue loop
         }

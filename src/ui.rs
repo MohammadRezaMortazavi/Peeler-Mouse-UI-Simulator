@@ -4,58 +4,60 @@
 
 use alloc::format;
 use ratatui::{
-    backend::Backend,
-    layout::{Alignment, Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
+    layout::{Alignment, Constraint, Layout}, // Modernized Layout API
+    style::{Color, Modifier, Style, Stylize}, // Added Stylize for cleaner syntax
     widgets::{Gauge, Paragraph},
     Frame,
 };
 
 use crate::app_state::{AppState, HMIState, Motor, SpdUnit, CONV_PERC_TO_MMS, LOGO_DOTS};
 
-// Renders the entire UI based on the current AppState
+// MAX'S FEEDBACK: Ensure drawing operations are completely decoupled from hardware
+// IMPLEMENTATION: This function is pure and only reads from the borrowed AppState.
 pub fn draw_ui(f: &mut Frame, app: &AppState) {
     let full_area = f.area();
 
-    let half_screen = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-        .split(full_area);
+    // Modern Ratatui Layout API (v0.26+)
+    let half_screen = Layout::vertical([
+        Constraint::Percentage(50), 
+        Constraint::Percentage(50)
+    ]).split(full_area);
     
     let inner_area = half_screen[0];
 
     // --- SPLASH SCREEN RENDER ---
     if app.status == HMIState::Startup {
         let splash_logo = Paragraph::new(LOGO_DOTS)
-            .style(Style::default().fg(Color::White))
+            .fg(Color::White)
             .alignment(Alignment::Center);
         f.render_widget(splash_logo, inner_area);
         return;
     }
 
     // --- MAIN UI LAYOUT ---
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)].as_ref())
-        .split(inner_area);
+    let main_chunks = Layout::vertical([
+        Constraint::Min(0), 
+        Constraint::Length(1)
+    ]).split(inner_area);
 
     let footer = Paragraph::new("SAXION ROBOTICS")
-        .style(Style::default().fg(Color::White))
+        .fg(Color::White)
         .alignment(Alignment::Center);
     f.render_widget(footer, main_chunks[1]);
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
-            Constraint::Length(1), Constraint::Length(2), Constraint::Min(0),
-        ].as_ref())
-        .split(main_chunks[0]);
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // Header
+        Constraint::Length(1), // Trans
+        Constraint::Length(1), // Cut
+        Constraint::Length(1), // Rot
+        Constraint::Length(2), // Gauge
+        Constraint::Min(0),
+    ]).split(main_chunks[0]);
 
-    let header_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(8)].as_ref())
-        .split(chunks[0]);
+    let header_chunks = Layout::horizontal([
+        Constraint::Min(0), 
+        Constraint::Length(8)
+    ]).split(chunks[0]);
 
     // Format status block
     let (status_text, status_style) = match app.status {
@@ -65,14 +67,14 @@ pub fn draw_ui(f: &mut Frame, app: &AppState) {
         _ => ("", Style::default()),
     };
 
-    f.render_widget(Paragraph::new(" System:").style(Style::default().fg(Color::White)), header_chunks[0]);
+    f.render_widget(Paragraph::new(" System:").fg(Color::White), header_chunks[0]);
     f.render_widget(Paragraph::new(status_text).style(status_style).alignment(Alignment::Right), header_chunks[1]);
 
     // Handle OFF state visibility
     if app.status == HMIState::Off {
         let off_p = Paragraph::new("PRESS (A) PWR")
             .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::White));
+            .fg(Color::White);
         f.render_widget(off_p, chunks[2]);
         return;
     }
@@ -106,7 +108,12 @@ pub fn draw_ui(f: &mut Frame, app: &AppState) {
     if app.motor.is_some() {
         let show_speed = if app.unit == SpdUnit::Percent { active_speed } else { active_speed * CONV_PERC_TO_MMS };
         let unit_str = if app.unit == SpdUnit::Percent { "%" } else { "mm/s" };
-        let (gauge_val, arrow) = if active_speed < 0.0 { ((active_speed.abs()) as u16, "<-") } else { (active_speed as u16, "->") };
+        
+        // CRITICAL FIX: Prevent Ratatui panic by clamping gauge percentage between 0 and 100
+        let raw_percent = active_speed.abs() as u16;
+        let gauge_val = raw_percent.clamp(0, 100);
+        
+        let arrow = if active_speed < 0.0 { "<-" } else { "->" };
         let exact_label = format!("{} {:.1}{}", arrow, show_speed, unit_str);
         
         let speed_gauge = Gauge::default()

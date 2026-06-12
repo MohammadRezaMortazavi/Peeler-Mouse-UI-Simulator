@@ -2,6 +2,8 @@
 // APP STATE & LOGIC
 // ==========================================
 
+use defmt::Format;
+
 pub const CONV_PERC_TO_MMS: f32 = 0.5;
 
 pub const LOGO_DOTS: &str = "\
@@ -20,8 +22,8 @@ pub const LOGO_DOTS: &str = "\
 .................................";
 
 // MAX'S FEEDBACK: "Having a variant `None` inside Motor enum is an anti-pattern in Rust. Use Option<Motor> instead."
-// IMPLEMENTATION: Removed `None` variant. The state logic now correctly utilizes `Option<Motor>`.
-#[derive(PartialEq, Copy, Clone)]
+// IMPLEMENTATION: Removed `None` variant. Added defmt::Format for hardware logging.
+#[derive(PartialEq, Copy, Clone, Format)]
 pub enum Motor {
     Translation,
     Cut,
@@ -29,8 +31,7 @@ pub enum Motor {
 }
 
 // MAX'S FEEDBACK: "StatusState is a bit ambiguous, maybe rename to HMIState?"
-// IMPLEMENTATION: Renamed properly to reflect Human-Machine Interface states.
-#[derive(PartialEq, Copy, Clone)]
+#[derive(PartialEq, Copy, Clone, Format)]
 pub enum HMIState {
     Startup,
     Off,
@@ -38,15 +39,14 @@ pub enum HMIState {
     OnAuto,
 }
 
-#[derive(PartialEq, Copy, Clone)]
+#[derive(PartialEq, Copy, Clone, Format)]
 pub enum SpdUnit {
     Percent,
     MMS,
 }
 
-// MAX'S FEEDBACK: "Using UI events like this to decouple 'how people input' and 'what the UI should do' is smart! I'd call it UIEvent."
-// IMPLEMENTATION: Renamed from AppEvent to UIEvent for clarity.
-#[derive(PartialEq, Copy, Clone)]
+// MAX'S FEEDBACK: "Using UI events to decouple 'how people input' and 'what the UI should do' is smart!"
+#[derive(PartialEq, Copy, Clone, Format)]
 pub enum UIEvent {
     TogglePower,
     ToggleMode,
@@ -57,12 +57,14 @@ pub enum UIEvent {
     EncoderCCW,
 }
 
-#[derive(PartialEq, Copy, Clone)]
+#[derive(PartialEq, Copy, Clone, Format)]
 pub enum RunState {
     Continue,
     Exit,
 }
 
+// Added Format so we can log the entire AppState if needed
+#[derive(Clone, Format)]
 pub struct AppState {
     pub status: HMIState,
     pub motor: Option<Motor>,
@@ -86,7 +88,16 @@ impl AppState {
         }
     }
 
-    pub fn handle_event(&mut self, event: UIEvent) -> RunState {
+    // FIX: Accepts Option<UIEvent> to seamlessly handle hardware debounce release (None)
+    pub fn handle_event(&mut self, event_opt: Option<UIEvent>) -> RunState {
+        // Ignore None events (which happen when a button is physically released)
+        let event = match event_opt {
+            Some(ev) => ev,
+            None => return RunState::Continue,
+        };
+
+        defmt::info!("[LOGIC] Processing UIEvent: {:?}", event);
+
         if self.status == HMIState::Startup {
             return RunState::Continue;
         }
@@ -151,6 +162,8 @@ impl AppState {
             },
             _ => {}
         }
+        
+        defmt::info!("[LOGIC] New State -> System: {:?}, Motor: {:?}", self.status, self.motor);
         RunState::Continue
     }
 }
